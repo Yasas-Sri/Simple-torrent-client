@@ -20,6 +20,22 @@ func (d *Decoder) Pos() int {
 	return d.pos
 }
 
+func (d *Decoder) PosIncr(n int) {
+	d.pos += n
+}
+
+func (d *Decoder) Peek() byte {
+	if d.pos >= len(d.data) {
+		return 0
+	}
+	return d.data[d.pos]
+}
+
+func (d *Decoder) SkipValue() error {
+	_, err := d.Decode()
+	return err
+}
+
 func (d *Decoder) Decode() (Bvalue, error) {
 
 	if d.pos >= len(d.data) {
@@ -138,6 +154,9 @@ func (d *Decoder) decodeDict() (Bvalue, error) {
 
 func (d *Decoder) DecodeDictWithSpan() (BDict, []byte, error) {
 	start := d.pos
+	if d.data[d.pos] != 'd' {
+		return nil, nil, fmt.Errorf("expected 'd' at pos %d, got %c", d.pos, d.data[d.pos])
+	}
 
 	val, err := d.decodeDict()
 	if err != nil {
