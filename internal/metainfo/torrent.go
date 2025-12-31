@@ -3,7 +3,7 @@ package metainfo
 import (
 	"crypto/sha1"
 	"errors"
-
+	"fmt"
 	"torrent-client/internal/bencode"
 )
 
@@ -12,73 +12,50 @@ type TorrentMeta struct {
 	Name        string
 	PieceLength int64
 	Length      int64
-
-	Pieces    [][]byte
-	InfoBytes []byte
-	InfoHash  [20]byte
+	Pieces      [][]byte
+	InfoBytes   []byte
+	InfoHash    [20]byte
 }
 
 func ParseTorrent(data []byte) (*TorrentMeta, error) {
-
 	dec := bencode.NewDecoder(data)
 
-	rootVal, err := dec.Decode()
-	if err != nil {
-		return nil, err
+	if dec.Peek() != 'd' {
+		return nil, fmt.Errorf("invalid torrent: root must be a dictionary")
 	}
+	dec.PosIncr(1)
 
-	root, ok := rootVal.(bencode.BDict)
-	if !ok {
-		return nil, errors.New("torrent file is not a dictionary")
-	}
-
-	announceVal, ok := root["announce"]
-	if !ok {
-		return nil, errors.New("missing announce")
-	}
-	announce := string(announceVal.(bencode.BString))
-
-	dec = bencode.NewDecoder(data)
-	rootRaw, _ := dec.Decode()
-
-	rootDict := rootRaw.(bencode.BDict)
-
+	var announce string
 	var infoDict bencode.BDict
 	var infoBytes []byte
 
-	for key := range rootDict {
-		if key == "info" {
-
-			dec = bencode.NewDecoder(data)
-			dict, err := dec.Decode()
-			if err != nil {
-				return nil, err
-			}
-
-			top := dict.(bencode.BDict)
-			_ = top
-
-			dec = bencode.NewDecoder(data)
-			dec.Decode()
-			break
+	for dec.Peek() != 'e' && dec.Peek() != 0 {
+		keyVal, err := dec.Decode()
+		if err != nil {
+			return nil, err
 		}
-	}
 
-	dec = bencode.NewDecoder(data)
-	dec.Decode()
-
-	for dec.Pos() < len(data) && data[dec.Pos()] != 'e' {
-		keyVal, _ := dec.Decode()
 		key := string(keyVal.(bencode.BString))
 
-		if key == "info" {
-			infoDict, infoBytes, err = dec.DecodeDictWithSpan()
+		switch key {
+		case "announce":
+			val, err := dec.Decode()
 			if err != nil {
 				return nil, err
 			}
-			break
-		} else {
-			dec.Decode()
+			announce = string(val.(bencode.BString))
+		case "info":
+			dict, raw, err := dec.DecodeDictWithSpan()
+			if err != nil {
+				return nil, err
+			}
+			infoDict = dict
+			infoBytes = raw
+		default:
+
+			if err := dec.SkipValue(); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -86,30 +63,32 @@ func ParseTorrent(data []byte) (*TorrentMeta, error) {
 		return nil, errors.New("missing info dictionary")
 	}
 
-	name := string(infoDict["name"].(bencode.BString))
-	pieceLength := int64(infoDict["piece length"].(bencode.BInt))
-	length := int64(infoDict["length"].(bencode.BInt))
+	var totalLength int64
+	if val, ok := infoDict["length"]; ok {
+		totalLength = int64(val.(bencode.BInt))
+	} else if files, ok := infoDict["files"]; ok {
+		for _, f := range files.(bencode.BList) {
+			fileDict := f.(bencode.BDict)
+			totalLength += int64(fileDict["length"].(bencode.BInt))
+		}
+	}
 
 	piecesRaw := infoDict["pieces"].(bencode.BString)
 	if len(piecesRaw)%20 != 0 {
 		return nil, errors.New("invalid pieces length")
 	}
-
 	var pieces [][]byte
 	for i := 0; i < len(piecesRaw); i += 20 {
 		pieces = append(pieces, piecesRaw[i:i+20])
 	}
 
-	hash := sha1.Sum(infoBytes)
-
 	return &TorrentMeta{
 		Announce:    announce,
-		Name:        name,
-		PieceLength: pieceLength,
-		Length:      length,
+		Name:        string(infoDict["name"].(bencode.BString)),
+		PieceLength: int64(infoDict["piece length"].(bencode.BInt)),
+		Length:      totalLength,
 		Pieces:      pieces,
 		InfoBytes:   infoBytes,
-		InfoHash:    hash,
+		InfoHash:    sha1.Sum(infoBytes),
 	}, nil
-
 }
