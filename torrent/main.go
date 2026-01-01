@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"time"
@@ -100,5 +101,49 @@ func main() {
 	defer connection.Close()
 
 	fmt.Printf("Connected! Peer ID: %x\n", handshake.PeerID)
+
+	interestedMsg := peer.Message{ID: peer.MsgInterested}
+	_, err = connection.Write(interestedMsg.Serialize())
+	if err != nil {
+		fmt.Printf("Failed to send interested message: %v\n", err)
+		return
+	}
+
+	fmt.Println("Sent 'Interested' message. Waiting for messages...")
+
+	for {
+		msg, err := peer.ReadMessage(connection)
+		if err != nil {
+			if err == io.EOF {
+				fmt.Println("Peer closed connection.")
+			} else {
+				fmt.Printf("Error reading message: %v\n", err)
+			}
+			break
+		}
+
+		if msg == nil {
+
+			continue
+		}
+
+		switch msg.ID {
+		case peer.MsgUnchoke:
+			fmt.Println("Success! Peer has UNCHOKED us. We can now request data.")
+
+		case peer.MsgChoke:
+			fmt.Println("Peer has CHOKED us. We must wait.")
+
+		case peer.MsgHave:
+
+			fmt.Println("Peer received a new piece.")
+
+		case peer.MsgBitfield:
+			fmt.Printf("Received Bitfield (length: %d bytes). This tells us which pieces the peer has.\n", len(msg.Payload))
+
+		default:
+			fmt.Printf("Received message ID: %d\n", msg.ID)
+		}
+	}
 
 }
