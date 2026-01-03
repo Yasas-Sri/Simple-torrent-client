@@ -60,3 +60,11 @@ func ReadMessage(r io.Reader) (*Message, error) {
 		Payload: messageBuf[1:],
 	}, nil
 }
+
+func FormatRequest(index, begin, length int) []byte {
+	payload := make([]byte, 12)
+	binary.BigEndian.PutUint32(payload[0:4], uint32(index))
+	binary.BigEndian.PutUint32(payload[4:8], uint32(begin))
+	binary.BigEndian.PutUint32(payload[8:12], uint32(length))
+	return payload
+}
