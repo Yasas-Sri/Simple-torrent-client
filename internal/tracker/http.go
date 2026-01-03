@@ -85,7 +85,10 @@ func GetPeers(meta *metainfo.TorrentMeta) ([]Peer, error) {
 		Timeout: 15 * time.Second,
 	}
 
-	resp, err := client.Get(url)
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("User-Agent", "GeminiTorrent/1.0")
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}

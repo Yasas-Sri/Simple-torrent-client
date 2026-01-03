@@ -2,148 +2,76 @@ package main
 
 import (
 	"fmt"
-	"io"
-	"net"
-	"os"
 	"time"
-	"torrent-client/internal/metainfo"
-	"torrent-client/internal/peer"
+
+	"log"
+	"torrent-client/internal/api"
+	"torrent-client/internal/gui"
+	"torrent-client/internal/p2p"
 	"torrent-client/internal/tracker"
+
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/widget"
 )
 
-func connectToPeer(p tracker.Peer, infoHash, peerID [20]byte) (*peer.Handshake, net.Conn, error) {
-	address := net.JoinHostPort(p.IP.String(), fmt.Sprintf("%d", p.Port))
-
-	conn, err := net.DialTimeout("tcp", address, 5*time.Second)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	conn.SetDeadline(time.Now().Add(5 * time.Second))
-
-	hs := peer.NewHandshake(infoHash, peerID)
-
-	_, err = conn.Write(hs.Serialize())
-	if err != nil {
-		conn.Close()
-		return nil, nil, fmt.Errorf("failed to send handshake: %w", err)
-	}
-
-	res, err := peer.Read(conn)
-	if err != nil {
-		conn.Close()
-		return nil, nil, fmt.Errorf("failed to read handshake: %w", err)
-	}
-
-	conn.SetDeadline(time.Time{})
-
-	return res, conn, nil
-}
-
 func main() {
-	if len(os.Args) < 2 {
-		panic("usage: torrent <file.torrent>")
-	}
-
-	data, err := os.ReadFile(os.Args[1])
-	if err != nil {
-		panic(err)
-	}
-
-	meta, err := metainfo.ParseTorrent(data)
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Println("Name:", meta.Name)
-	fmt.Println("Tracker:", meta.Announce)
-	fmt.Println("Piece length:", meta.PieceLength)
-	fmt.Println("Total size:", meta.Length)
-	fmt.Println("Pieces:", len(meta.Pieces))
-	fmt.Printf("Info hash: %x\n", meta.InfoHash)
-
-	peers, err := tracker.GetPeers(meta)
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Println("Peers:")
-	for _, p := range peers {
-		fmt.Printf("  %s:%d\n", p.IP, p.Port)
-	}
 
 	myID, err := tracker.GeneratePeerID()
 	if err != nil {
-		panic(fmt.Errorf("could not generate peer ID: %w", err))
+		log.Fatalf("Critical Error: Could not generate Peer ID: %v", err)
 	}
 
-	fmt.Printf("Found %d peers. Starting connection attempts...\n", len(peers))
+	manager := p2p.NewManager(myID)
 
-	var connection net.Conn
-	var handshake *peer.Handshake
+	server := api.NewServer(manager)
+	go server.Start()
+	gui.StartUI(manager)
 
-	for _, p := range peers {
-		fmt.Printf("Trying peer: %s:%d\n", p.IP, p.Port)
+}
 
-		handshake, connection, err = connectToPeer(p, meta.InfoHash, myID)
-		if err != nil {
-			fmt.Printf("Connection failed: %v\n", err)
-			continue
-		}
+func runGUI(m *p2p.Manager) {
+	myApp := app.New()
+	myWindow := myApp.NewWindow("Gemini Torrent Client")
+	myWindow.Resize(fyne.NewSize(600, 400))
 
-		break
-	}
+	// UI Components
+	statusList := container.NewVBox()
+	scroll := container.NewScroll(statusList)
 
-	if connection == nil {
-		fmt.Println("Could not connect to any peers.")
-		return
-	}
-	defer connection.Close()
+	addInput := widget.NewEntry()
+	addInput.SetPlaceHolder("Enter path to .torrent file...")
 
-	fmt.Printf("Connected! Peer ID: %x\n", handshake.PeerID)
+	addBtn := widget.NewButton("Add Torrent", func() {
 
-	interestedMsg := peer.Message{ID: peer.MsgInterested}
-	_, err = connection.Write(interestedMsg.Serialize())
-	if err != nil {
-		fmt.Printf("Failed to send interested message: %v\n", err)
-		return
-	}
+		fmt.Println("Attempting to add:", addInput.Text)
 
-	fmt.Println("Sent 'Interested' message. Waiting for messages...")
+	})
 
-	for {
-		msg, err := peer.ReadMessage(connection)
-		if err != nil {
-			if err == io.EOF {
-				fmt.Println("Peer closed connection.")
-			} else {
-				fmt.Printf("Error reading message: %v\n", err)
+	go func() {
+		for {
+			time.Sleep(time.Second)
+			stats := m.GetStats()
+
+			statusList.Objects = nil
+			for _, s := range stats {
+				progress := widget.NewProgressBar()
+				progress.SetValue(s.Percent / 100)
+
+				info := widget.NewLabel(fmt.Sprintf("%s - %.2f%%", s.Name, s.Percent))
+				statusList.Add(info)
+				statusList.Add(progress)
 			}
-			break
+			statusList.Refresh()
 		}
+	}()
 
-		if msg == nil {
+	myWindow.SetContent(container.NewBorder(
+		container.NewVBox(addInput, addBtn),
+		nil, nil, nil,
+		scroll,
+	))
 
-			continue
-		}
-
-		switch msg.ID {
-		case peer.MsgUnchoke:
-			fmt.Println("Success! Peer has UNCHOKED us. We can now request data.")
-
-		case peer.MsgChoke:
-			fmt.Println("Peer has CHOKED us. We must wait.")
-
-		case peer.MsgHave:
-
-			fmt.Println("Peer received a new piece.")
-
-		case peer.MsgBitfield:
-			fmt.Printf("Received Bitfield (length: %d bytes). This tells us which pieces the peer has.\n", len(msg.Payload))
-
-		default:
-			fmt.Printf("Received message ID: %d\n", msg.ID)
-		}
-	}
-
+	myWindow.ShowAndRun()
 }
